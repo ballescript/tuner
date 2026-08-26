@@ -67,9 +67,19 @@
                 sampleRate: audioCtx.sampleRate 
             });
 
-        } catch (err) {
+        } catch (err: unknown) {
             console.error(err);
-            alert("Could not access microphone.");
+            isProcessing = false;
+            
+            // Tell TypeScript we are checking if it's a standard Error object
+            if (err instanceof Error) {
+                feedback = "Err: " + err.message;
+                alert("System Error:\n" + err.name + ": " + err.message);
+            } else {
+                // Fallback just in case something weird was thrown
+                feedback = "Err: Unknown error occurred";
+                alert("System Error:\n" + String(err));
+            }
         }
     }
 </script>
