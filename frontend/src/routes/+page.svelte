@@ -22,21 +22,37 @@
         if (isProcessing) return;
 
         try {
+            // Trace 1: Did the button even work?
+            alert("1. Requesting microphone...");
+
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } 
             });
 
+            // Trace 2: Did the phone block the mic?
+            alert("2. Microphone granted!");
+
             const audioCtx = new AudioContext();
             const source = audioCtx.createMediaStreamSource(stream);
 
-            // Load the polyfill FIRST so TextDecoder is ready
-            await audioCtx.audioWorklet.addModule('/tuner/polyfill.js');
-            // Then load our processor
-            await audioCtx.audioWorklet.addModule('/tuner/audio-processor.js');
+            // FIX: This detects if you are on localhost or the live server, fixing the computer `<` error!
+            const basePath = window.location.pathname.startsWith('/tuner') ? '/tuner' : '';
 
-            const wasmResponse = await fetch('/tuner/wasm/wasm_processor_bg.wasm');
+            // Trace 3: Did Nginx swallow the files?
+            alert("3. Loading worklet from: " + (basePath || "root"));
+
+            await audioCtx.audioWorklet.addModule(`${basePath}/polyfill.js`);
+            await audioCtx.audioWorklet.addModule(`${basePath}/audio-processor.js`);
+
+            const wasmResponse = await fetch(`${basePath}/wasm/wasm_processor_bg.wasm`);
+            
+            // If the response is not OK (like a 404), throw an error manually
+            if (!wasmResponse.ok) throw new Error("WASM file not found on server");
+            
             const wasmBuffer = await wasmResponse.arrayBuffer();
             const wasmModule = await WebAssembly.compile(wasmBuffer);
+
+            alert("4. Booting Rust pitch detector!");
 
             const workletNode = new AudioWorkletNode(audioCtx, 'pitch-detector-processor');
 
@@ -50,7 +66,6 @@
                     const midiNote = hzToMidi(event.data.hz);
                     currentNote = midiToSolfege(midiNote);
 
-                    // Game logic: Compare current pitch to target
                     if (midiNote === targetMidiNote) {
                         feedback = "Perfect! Hold it!";
                     } else if (midiNote > targetMidiNote) {
@@ -67,18 +82,16 @@
                 sampleRate: audioCtx.sampleRate 
             });
 
-        } catch (err: unknown) {
+        } catch (err) {
             console.error(err);
             isProcessing = false;
             
-            // Tell TypeScript we are checking if it's a standard Error object
             if (err instanceof Error) {
                 feedback = "Err: " + err.message;
-                alert("System Error:\n" + err.name + ": " + err.message);
+                alert("CRASH:\n" + err.name + ": " + err.message);
             } else {
-                // Fallback just in case something weird was thrown
-                feedback = "Err: Unknown error occurred";
-                alert("System Error:\n" + String(err));
+                feedback = "Err: Unknown";
+                alert("CRASH:\n" + String(err));
             }
         }
     }
