@@ -1,4 +1,4 @@
-import init, { PitchDetector } from './wasm/wasm_processor.js';
+import init, { PitchDetector } from '/tuner/wasm/wasm_processor.js';
 
 class PitchDetectorProcessor extends AudioWorkletProcessor {
     constructor() {
