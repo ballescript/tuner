@@ -1,144 +1,140 @@
 <script lang="ts">
-    // Svelte 5 runes for state
     let isProcessing = $state(false);
     let currentNote = $state("-");
     let feedback = $state("Press start to sing");
     
-    // Let's set a target note for gamification (e.g., Mi 4)
-    const targetNoteStr = "Mi";
-    const targetMidiNote = 64; // E4 (Mi)
-    
     const solfege = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
+    
+    const targetNotes = [
+        { name: "Do", midi: 60 },
+        { name: "Re", midi: 62 },
+        { name: "Mi", midi: 64 },
+        { name: "Fa", midi: 65 },
+        { name: "Sol", midi: 67 },
+        { name: "La", midi: 69 },
+        { name: "Si", midi: 71 }
+    ];
+    
+    let level = $state(0);
+    let targetNoteStr = $derived(targetNotes[level]?.name || "Win!");
+    let targetMidiNote = $derived(targetNotes[level]?.midi || 0);
+    
+    let holdProgress = $state(0);
+    let successStart = 0;
 
     function hzToMidi(hz: number): number {
         return Math.round(12 * Math.log2(hz / 440)) + 69;
     }
-
     function midiToSolfege(midi: number): string {
         return solfege[midi % 12];
     }
 
     async function initializeAudio() {
         if (isProcessing) return;
-
         try {
-            // Trace 1: Did the button even work?
-            alert("1. Requesting microphone...");
+            // Fixed TypeScript error by casting window as any for older iOS compatibility
+            const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            const audioCtx = new AudioContextClass();
+
+            // Force mobile browsers to wake up the audio system instantly
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
 
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } 
             });
-
-            // Trace 2: Did the phone block the mic?
-            alert("2. Microphone granted!");
-
-            const audioCtx = new AudioContext();
+            
             const source = audioCtx.createMediaStreamSource(stream);
 
-            // FIX: This detects if you are on localhost or the live server, fixing the computer `<` error!
-            const basePath = window.location.pathname.startsWith('/tuner') ? '/tuner' : '';
+            await audioCtx.audioWorklet.addModule('/tuner/polyfill.js');
+            await audioCtx.audioWorklet.addModule('/tuner/audio-processor.js');
 
-            // Trace 3: Did Nginx swallow the files?
-            alert("3. Loading worklet from: " + (basePath || "root"));
-
-            await audioCtx.audioWorklet.addModule(`${basePath}/polyfill.js`);
-            await audioCtx.audioWorklet.addModule(`${basePath}/audio-processor.js`);
-
-            const wasmResponse = await fetch(`${basePath}/wasm/wasm_processor_bg.wasm`);
-            
-            // If the response is not OK (like a 404), throw an error manually
-            if (!wasmResponse.ok) throw new Error("WASM file not found on server");
+            const wasmResponse = await fetch('/tuner/wasm/wasm_processor_bg.wasm');
+            if (!wasmResponse.ok) throw new Error("WASM file not found");
             
             const wasmBuffer = await wasmResponse.arrayBuffer();
             const wasmModule = await WebAssembly.compile(wasmBuffer);
-
-            alert("4. Booting Rust pitch detector!");
-
+            
             const workletNode = new AudioWorkletNode(audioCtx, 'pitch-detector-processor');
 
             workletNode.port.onmessage = (event) => {
                 if (event.data.type === 'ready') {
                     isProcessing = true;
-                    feedback = "Sing a 'Mi'!";
+                    feedback = `Sing '${targetNoteStr}'!`;
                     source.connect(workletNode);
                     workletNode.connect(audioCtx.destination);
                 } else if (event.data.type === 'pitch') {
+                    if (level >= targetNotes.length) return; 
+                    
                     const midiNote = hzToMidi(event.data.hz);
                     currentNote = midiToSolfege(midiNote);
 
                     if (midiNote === targetMidiNote) {
+                        if (successStart === 0) successStart = Date.now();
+                        holdProgress = Math.min(100, ((Date.now() - successStart) / 1500) * 100);
                         feedback = "Perfect! Hold it!";
-                    } else if (midiNote > targetMidiNote) {
-                        feedback = "Lower! ↓";
+                        
+                        if (holdProgress >= 100) {
+                            level++;
+                            successStart = 0;
+                            holdProgress = 0;
+                            feedback = level < targetNotes.length 
+                                ? `Great! Now sing '${targetNotes[level].name}'!` 
+                                : "You beat the game!";
+                        }
                     } else {
-                        feedback = "Higher! ↑";
+                        successStart = 0;
+                        holdProgress = 0;
+                        feedback = midiNote > targetMidiNote ? "Lower! ↓" : "Higher! ↑";
                     }
                 }
             };
-
-            workletNode.port.postMessage({ 
-                type: 'init-wasm', 
-                wasmModule,
-                sampleRate: audioCtx.sampleRate 
-            });
-
+            
+            workletNode.port.postMessage({ type: 'init-wasm', wasmModule, sampleRate: audioCtx.sampleRate });
         } catch (err) {
             console.error(err);
             isProcessing = false;
-            
-            if (err instanceof Error) {
-                feedback = "Err: " + err.message;
-                alert("CRASH:\n" + err.name + ": " + err.message);
-            } else {
-                feedback = "Err: Unknown";
-                alert("CRASH:\n" + String(err));
-            }
+            if (err instanceof Error) alert("Error: " + err.message);
         }
     }
 </script>
 
-<!-- Updated bg-linear-to-b per Tailwind v4 -->
 <div class="min-h-screen bg-linear-to-br from-sky-300 via-cyan-100 to-emerald-200 flex items-center justify-center p-4">
     <div class="relative bg-white/30 backdrop-blur-xl border border-white/60 shadow-[0_8px_32px_rgba(0,150,200,0.2)] rounded-3xl p-8 max-w-md w-full overflow-hidden text-center">
         
-        <div class="absolute top-0 left-0 right-0 h-32 bg-linear-to-b from-white/40 to-transparent pointer-events-none"></div>
-
         <div class="relative z-10 flex flex-col items-center mb-6">
-            <h1 class="text-4xl font-extrabold text-teal-900 drop-shadow-md tracking-tight">Vocal Tuner</h1>
+            <h1 class="text-4xl font-extrabold text-teal-900 drop-shadow-md tracking-tight">Level {level < targetNotes.length ? level + 1 : "Complete"}</h1>
             <p class="text-teal-700 font-medium text-lg mt-2 font-mono bg-white/40 px-4 py-1 rounded-full">{feedback}</p>
         </div>
 
         <div class="space-y-6 relative z-10 my-8">
             <div class="flex justify-between items-end px-4">
                 <div class="flex flex-col items-center">
-                    <span class="text-teal-800 text-sm font-bold uppercase tracking-widest">Current</span>
+                    <span class="text-teal-800 text-sm font-bold uppercase tracking-widest">You</span>
                     <span class="text-6xl font-black text-cyan-600 drop-shadow-md">{currentNote}</span>
                 </div>
-                
                 <div class="w-px h-16 bg-teal-800/20"></div>
-                
                 <div class="flex flex-col items-center">
                     <span class="text-teal-800 text-sm font-bold uppercase tracking-widest">Target</span>
                     <span class="text-5xl font-black text-teal-800/50 drop-shadow-sm">{targetNoteStr}</span>
                 </div>
             </div>
+
+            <!-- Hold Progress Bar -->
+            <div class="h-4 w-full bg-teal-900/10 rounded-full mt-4 overflow-hidden border border-teal-900/20 shadow-inner">
+                <div class="h-full bg-linear-to-r from-cyan-400 to-emerald-400 transition-all duration-100 ease-out" style="width: {holdProgress}%"></div>
+            </div>
         </div>
 
         <div class="relative z-10 mt-6">
-            <!-- Updated to use Svelte 5 onclick -->
             <button 
                 onclick={initializeAudio}
                 disabled={isProcessing}
-                class="w-full relative overflow-hidden bg-linear-to-b from-cyan-400 to-blue-500 rounded-full py-4 px-6 text-white text-lg font-bold shadow-[inset_0_2px_4px_rgba(255,255,255,0.7),inset_0_-4px_8px_rgba(0,0,0,0.2),0_4px_10px_rgba(0,100,200,0.4)] hover:from-cyan-300 hover:to-blue-400 transition-all active:shadow-[inset_0_4px_8px_rgba(0,0,0,0.3)] active:translate-y-0.5 group disabled:opacity-75 disabled:cursor-not-allowed"
+                class="w-full relative overflow-hidden bg-linear-to-b from-cyan-400 to-blue-500 rounded-full py-4 px-6 text-white text-lg font-bold shadow-[inset_0_2px_4px_rgba(255,255,255,0.7),inset_0_-4px_8px_rgba(0,0,0,0.2),0_4px_10px_rgba(0,100,200,0.4)] hover:from-cyan-300 hover:to-blue-400 transition-all disabled:opacity-75"
             >
-                <span class="relative z-10 drop-shadow-md group-hover:drop-shadow-lg transition-all">
-                    {isProcessing ? "Listening..." : "Start Tuner"}
-                </span>
-                <div class="absolute top-1 left-1/2 -translate-x-1/2 w-[90%] h-[40%] bg-linear-to-b from-white/70 to-transparent rounded-full pointer-events-none"></div>
+                {isProcessing ? "Listening..." : "Start Game"}
             </button>
         </div>
     </div>
-    
-    <div class="fixed top-20 left-20 w-32 h-32 bg-white/20 rounded-full blur-xl pointer-events-none"></div>
-    <div class="fixed bottom-20 right-20 w-48 h-48 bg-cyan-400/20 rounded-full blur-2xl pointer-events-none"></div>
 </div>
