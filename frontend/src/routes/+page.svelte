@@ -28,9 +28,16 @@
         if (isProcessing) return;
         try {
             debugLog = "1. Loading WASM...";
-            // Dynamically import the Rust WASM module into the main thread
-            // @ts-expect-error - The file exists at runtime, tell TS to skip checking the path
-            const wasm = await import('/tuner/wasm/wasm_processor.js');
+            
+            const wasmUrl = '/tuner/wasm/wasm_processor.js';
+            
+            const wasm = (await import(/* @vite-ignore */ wasmUrl)) as unknown as {
+                default: (url: string) => Promise<void>;
+                PitchDetector: {
+                    new (sampleRate: number): { detect_pitch(buffer: Float32Array): number };
+                };
+            };
+            
             const init = wasm.default;
             const PitchDetector = wasm.PitchDetector;
 
@@ -44,7 +51,8 @@
                 await audioCtx.resume();
             }
 
-            const detector = PitchDetector.new(audioCtx.sampleRate);
+            // Create detector using the WASM class we imported
+            const detector = new PitchDetector(audioCtx.sampleRate);
 
             debugLog = "3. Requesting Mic...";
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -100,11 +108,11 @@
                     }
                 }
                 
-                // Run this loop natively at 60 FPS
+                // Run this loop natively at screen refresh rate (~60 FPS)
                 requestAnimationFrame(detectPitchLoop);
             }
             
-            // Start the loop
+            // Start the infinite loop
             detectPitchLoop();
             
         } catch (err) {
