@@ -7,13 +7,20 @@ class PitchDetectorProcessor extends AudioWorkletProcessor {
         this.frameCount = 0;
         
         this.port.onmessage = async (event) => {
-            if (event.data.type === 'init-wasm') {
-                // We can now safely use the statically imported 'init'
-                await init(event.data.wasmModule);
-                this.detector = new PitchDetector(event.data.sampleRate);
-                this.port.postMessage({ type: 'ready' });
-            }
-        };
+    if (event.data.type === 'init-wasm') {
+        try {
+            await init(event.data.wasmModule);
+            this.detector = PitchDetector.new(event.data.sampleRate);
+            this.port.postMessage({ type: 'ready' });
+        } catch (err) {
+            // This catches the silent mobile crash and sends it to our debug log!
+            this.port.postMessage({ 
+                type: 'error', 
+                message: "INIT FAIL: " + (err.message || String(err)) 
+            });
+        }
+    }
+};
     }
 
     process(inputs) {
