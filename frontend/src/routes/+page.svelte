@@ -3,16 +3,13 @@
     let currentNote = $state("-");
     let feedback = $state("Press start to sing");
     
-    const solfege = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
+    // NEW: Live on-screen log for mobile debugging
+    let debugLog = $state("Awaiting start...");
     
+    const solfege = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
     const targetNotes = [
-        { name: "Do", midi: 60 },
-        { name: "Re", midi: 62 },
-        { name: "Mi", midi: 64 },
-        { name: "Fa", midi: 65 },
-        { name: "Sol", midi: 67 },
-        { name: "La", midi: 69 },
-        { name: "Si", midi: 71 }
+        { name: "Do", midi: 60 }, { name: "Re", midi: 62 }, { name: "Mi", midi: 64 },
+        { name: "Fa", midi: 65 }, { name: "Sol", midi: 67 }, { name: "La", midi: 69 }, { name: "Si", midi: 71 }
     ];
     
     let level = $state(0);
@@ -32,24 +29,23 @@
     async function initializeAudio() {
         if (isProcessing) return;
         try {
-            // Fixed TypeScript error by casting window as any for older iOS compatibility
+            debugLog = "1. Creating AudioContext...";
             const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
             const audioCtx = new AudioContextClass();
 
-            // Force mobile browsers to wake up the audio system instantly
             if (audioCtx.state === 'suspended') {
                 await audioCtx.resume();
             }
 
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } 
-            });
-            
+            debugLog = "2. Requesting Mic...";
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             const source = audioCtx.createMediaStreamSource(stream);
 
+            debugLog = "3. Loading Worklet...";
             await audioCtx.audioWorklet.addModule('/tuner/polyfill.js');
             await audioCtx.audioWorklet.addModule('/tuner/audio-processor.js');
 
+            debugLog = "4. Fetching WASM...";
             const wasmResponse = await fetch('/tuner/wasm/wasm_processor_bg.wasm');
             if (!wasmResponse.ok) throw new Error("WASM file not found");
             
@@ -58,15 +54,23 @@
             
             const workletNode = new AudioWorkletNode(audioCtx, 'pitch-detector-processor');
 
+            workletNode.onprocessorerror = () => {
+                debugLog = "CRASH: Processor Error";
+            };
+
             workletNode.port.onmessage = (event) => {
                 if (event.data.type === 'ready') {
+                    debugLog = "5. Ready! Processing audio...";
                     isProcessing = true;
                     feedback = `Sing '${targetNoteStr}'!`;
-                    const silencer = audioCtx.createGain();
-                    silencer.gain.value = 0;
+                    
+                    // ANDROID FIX: Connect Mic -> Worklet. NEVER connect to destination.
                     source.connect(workletNode);
-                    workletNode.connect(audioCtx.destination);
+                    
                 } else if (event.data.type === 'pitch') {
+                    // Log the raw frequency so we know Android is actually sending numbers
+                    debugLog = `Raw Pitch: ${event.data.hz.toFixed(2)} Hz`;
+                    
                     if (level >= targetNotes.length) return; 
                     
                     const midiNote = hzToMidi(event.data.hz);
@@ -95,9 +99,8 @@
             
             workletNode.port.postMessage({ type: 'init-wasm', wasmModule, sampleRate: audioCtx.sampleRate });
         } catch (err) {
-            console.error(err);
             isProcessing = false;
-            if (err instanceof Error) alert("Error: " + err.message);
+            debugLog = err instanceof Error ? `Error: ${err.message}` : "Unknown Error";
         }
     }
 </script>
@@ -128,6 +131,13 @@
                 <div class="h-full bg-linear-to-r from-cyan-400 to-emerald-400 transition-all duration-100 ease-out" style="width: {holdProgress}%"></div>
             </div>
         </div>
+
+        <!-- ADD THIS JUST ABOVE THE BUTTON -->
+<div class="relative z-10 mb-4 mt-2">
+    <p class="text-xs font-mono text-teal-900/40 bg-teal-900/5 py-1 px-3 rounded-full inline-block">
+        {debugLog}
+    </p>
+</div>
 
         <div class="relative z-10 mt-6">
             <button 
