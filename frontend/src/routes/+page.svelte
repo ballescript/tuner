@@ -62,6 +62,8 @@
                 if (event.data.type === 'ready') {
                     isProcessing = true;
                     feedback = `Sing '${targetNoteStr}'!`;
+                    const silencer = audioCtx.createGain();
+                    silencer.gain.value = 0;
                     source.connect(workletNode);
                     workletNode.connect(audioCtx.destination);
                 } else if (event.data.type === 'pitch') {
