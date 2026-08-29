@@ -25,99 +25,94 @@
     }
 
     async function initializeAudio() {
-    if (isProcessing) return;
-    try {
-        debugLog = "1. Creating AudioContext...";
-        const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const audioCtx = new AudioContextClass();
+        if (isProcessing) return;
+        try {
+            debugLog = "1. Loading WASM...";
+            // Dynamically import the Rust WASM module into the main thread
+            // @ts-expect-error - The file exists at runtime, tell TS to skip checking the path
+            const wasm = await import('/tuner/wasm/wasm_processor.js');
+            const init = wasm.default;
+            const PitchDetector = wasm.PitchDetector;
 
-        if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-        }
+            await init('/tuner/wasm/wasm_processor_bg.wasm');
 
-        debugLog = "2. Requesting Mic...";
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const source = audioCtx.createMediaStreamSource(stream);
+            debugLog = "2. Creating AudioContext...";
+            const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            const audioCtx = new AudioContextClass();
 
-        debugLog = "3. Loading Worklet...";
-        await audioCtx.audioWorklet.addModule('/tuner/polyfill.js');
-        await audioCtx.audioWorklet.addModule('/tuner/audio-processor.js');
-
-        debugLog = "4. Fetching WASM...";
-        const wasmResponse = await fetch('/tuner/wasm/wasm_processor_bg.wasm');
-        if (!wasmResponse.ok) throw new Error("WASM file not found");
-        
-        debugLog = "4.1 Buffering WASM...";
-        const wasmBuffer = await wasmResponse.arrayBuffer();
-        
-        debugLog = "4.2 Compiling WASM...";
-        const wasmModule = await WebAssembly.compile(wasmBuffer);
-        
-        debugLog = "4.3 Creating Worklet Node...";
-        const workletNode = new AudioWorkletNode(audioCtx, 'pitch-detector-processor');
-
-        workletNode.onprocessorerror = (e: Event) => {
-            // If it's a detailed error event, grab the message. Otherwise, just say it crashed.
-            const errorMsg = e instanceof ErrorEvent ? e.message : "Unknown Worklet crash";
-            debugLog = `CRASH: ${errorMsg}`;
-            console.error("Processor error:", e);
-        };
-
-        // Listen to absolutely everything the Worklet says
-        workletNode.port.onmessage = (event) => {
-            // If it sends an error, print it directly to the screen
-            if (event.data.type === 'error') {
-                debugLog = `WORKLET ERR: ${event.data.message}`;
-                return;
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
             }
 
-            if (event.data.type === 'ready') {
-                debugLog = "5. Ready! Processing audio...";
-                isProcessing = true;
-                feedback = `Sing '${targetNoteStr}'!`;
-                source.connect(workletNode);
-                
-            } else if (event.data.type === 'pitch') {
-                debugLog = `Pitch: ${event.data.hz.toFixed(1)} Hz`;
-                
-                if (level >= targetNotes.length) return; 
-                
-                const midiNote = hzToMidi(event.data.hz);
-                currentNote = midiToSolfege(midiNote);
+            const detector = PitchDetector.new(audioCtx.sampleRate);
 
-                if (midiNote === targetMidiNote) {
-                    if (successStart === 0) successStart = Date.now();
-                    holdProgress = Math.min(100, ((Date.now() - successStart) / 1500) * 100);
-                    feedback = "Perfect! Hold it!";
+            debugLog = "3. Requesting Mic...";
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const source = audioCtx.createMediaStreamSource(stream);
+            
+            // Create Analyser instead of Worklet
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 4096; // 4096 gives high resolution for pitch detection
+            
+            // Connect mic to analyser (DO NOT connect analyser to destination/speakers)
+            source.connect(analyser);
+
+            debugLog = "4. Ready! Processing audio...";
+            isProcessing = true;
+            feedback = `Sing '${targetNoteStr}'!`;
+
+            const buffer = new Float32Array(analyser.fftSize);
+
+            function detectPitchLoop() {
+                if (!isProcessing) return;
+                
+                // Pull the raw audio wave directly into our buffer
+                analyser.getFloatTimeDomainData(buffer);
+                
+                // Send it to Rust
+                const pitch = detector.detect_pitch(buffer);
+                
+                if (pitch > 0) {
+                    debugLog = `Raw Pitch: ${pitch.toFixed(1)} Hz`;
                     
-                    if (holdProgress >= 100) {
-                        level++;
-                        successStart = 0;
-                        holdProgress = 0;
-                        feedback = level < targetNotes.length 
-                            ? `Great! Now sing '${targetNotes[level].name}'!` 
-                            : "You beat the game!";
+                    if (level < targetNotes.length) {
+                        const midiNote = hzToMidi(pitch);
+                        currentNote = midiToSolfege(midiNote);
+
+                        if (midiNote === targetMidiNote) {
+                            if (successStart === 0) successStart = Date.now();
+                            holdProgress = Math.min(100, ((Date.now() - successStart) / 1500) * 100);
+                            feedback = "Perfect! Hold it!";
+                            
+                            if (holdProgress >= 100) {
+                                level++;
+                                successStart = 0;
+                                holdProgress = 0;
+                                feedback = level < targetNotes.length 
+                                    ? `Great! Now sing '${targetNotes[level].name}'!` 
+                                    : "You beat the game!";
+                            }
+                        } else {
+                            successStart = 0;
+                            holdProgress = 0;
+                            feedback = midiNote > targetMidiNote ? "Lower! ↓" : "Higher! ↑";
+                        }
                     }
-                } else {
-                    successStart = 0;
-                    holdProgress = 0;
-                    feedback = midiNote > targetMidiNote ? "Lower! ↓" : "Higher! ↑";
                 }
-            } else {
-                // Catch any unknown messages
-                debugLog = `Unknown Msg: ${JSON.stringify(event.data)}`;
+                
+                // Run this loop natively at 60 FPS
+                requestAnimationFrame(detectPitchLoop);
             }
-        };
-        
-        debugLog = "4.4 Sending WASM to Worklet...";
-        workletNode.port.postMessage({ type: 'init-wasm', wasmModule, sampleRate: audioCtx.sampleRate });
-        debugLog = "4.5 Waiting for Worklet Ready...";
-        
-    } catch (err) {
-        isProcessing = false;
-        debugLog = err instanceof Error ? `ERR: ${err.message}` : "Unknown Error";
+            
+            // Start the loop
+            detectPitchLoop();
+            
+        } catch (err) {
+            isProcessing = false;
+            debugLog = err instanceof Error ? `ERR: ${err.message}` : "Unknown Error";
+            console.error(err);
+        }
     }
-}
 </script>
 
 <div class="min-h-screen bg-linear-to-br from-sky-300 via-cyan-100 to-emerald-200 flex items-center justify-center p-4">
