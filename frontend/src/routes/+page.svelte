@@ -2,8 +2,6 @@
     let isProcessing = $state(false);
     let currentNote = $state("-");
     let feedback = $state("Press start to sing");
-    
-    // NEW: Live on-screen log for mobile debugging
     let debugLog = $state("Awaiting start...");
     
     const solfege = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
@@ -68,7 +66,6 @@
                     source.connect(workletNode);
                     
                 } else if (event.data.type === 'pitch') {
-                    // Log the raw frequency so we know Android is actually sending numbers
                     debugLog = `Raw Pitch: ${event.data.hz.toFixed(2)} Hz`;
                     
                     if (level >= targetNotes.length) return; 
@@ -126,20 +123,16 @@
                 </div>
             </div>
 
-            <!-- Hold Progress Bar -->
             <div class="h-4 w-full bg-teal-900/10 rounded-full mt-4 overflow-hidden border border-teal-900/20 shadow-inner">
                 <div class="h-full bg-linear-to-r from-cyan-400 to-emerald-400 transition-all duration-100 ease-out" style="width: {holdProgress}%"></div>
             </div>
         </div>
 
-        <!-- ADD THIS JUST ABOVE THE BUTTON -->
-<div class="relative z-10 mb-4 mt-2">
-    <p class="text-xs font-mono text-teal-900/40 bg-teal-900/5 py-1 px-3 rounded-full inline-block">
-        {debugLog}
-    </p>
-</div>
+        <div class="relative z-10 mt-6 flex flex-col gap-3">
+            <div class="bg-black/10 rounded-lg p-2 text-xs font-mono text-teal-900 text-left overflow-hidden whitespace-nowrap text-ellipsis">
+                Log: {debugLog}
+            </div>
 
-        <div class="relative z-10 mt-6">
             <button 
                 onclick={initializeAudio}
                 disabled={isProcessing}
